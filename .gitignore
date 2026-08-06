@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.DS_Store
+*.egg-info/
+venv/
+.venv/
+
+# Reports and rename output this tool generates next to a scanned folder
+Song_List_By_Category_*.csv
+*- Renamed Output */
