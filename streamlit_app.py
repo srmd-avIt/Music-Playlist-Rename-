@@ -13,6 +13,8 @@ report and an on-screen preview, nothing is renamed/copied/moved on disk.
 import csv
 import io
 import os
+import platform
+import subprocess
 from datetime import datetime
 
 import pandas as pd
@@ -44,6 +46,62 @@ def rows_to_csv_bytes(rows):
     return buf.getvalue().encode("utf-8")
 
 
+def _browse_folder():
+    """
+    Open a native OS folder picker in a separate process and return
+    (path_or_None, error_message_or_None). Deliberately shells out instead
+    of calling tkinter.filedialog directly: Streamlit runs the script in a
+    worker thread, and AppKit (macOS's GUI toolkit) requires GUI calls on
+    the main thread - calling tkinter from here can crash the whole
+    Streamlit process. A separate OS process has no such restriction.
+    """
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            result = subprocess.run(
+                ["osascript", "-e",
+                 'POSIX path of (choose folder with prompt "Select main folder to scan")'],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                return None, None  # user cancelled
+            return result.stdout.strip() or None, None
+        if system == "Windows":
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms;"
+                "$f = New-Object System.Windows.Forms.FolderBrowserDialog;"
+                "if ($f.ShowDialog() -eq 'OK') { Write-Output $f.SelectedPath }"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_script],
+                capture_output=True, text=True, timeout=120,
+            )
+            return result.stdout.strip() or None, None
+        # Linux and anything else: fall back to zenity if it's installed.
+        result = subprocess.run(
+            ["zenity", "--file-selection", "--directory", "--title=Select main folder to scan"],
+            capture_output=True, text=True, timeout=120,
+        )
+        if result.returncode != 0:
+            return None, None
+        return result.stdout.strip() or None, None
+    except FileNotFoundError:
+        return None, "No native folder picker is available on this system — paste the path instead."
+    except Exception as exc:
+        return None, f"Couldn't open the folder picker: {exc}"
+
+
+def _browse_and_set_folder():
+    # Runs as an on_click callback, which executes BEFORE the script rerun
+    # renders any widgets - safe to set the folder_path text_input's
+    # session-state value here, unlike doing it further down the script
+    # body after that widget has already been instantiated this run.
+    path, error = _browse_folder()
+    st.session_state["_browse_error"] = error
+    if path:
+        st.session_state["folder_path"] = path
+
+
 st.set_page_config(page_title="Song Library Category Checker", layout="wide")
 st.title("Song Library Category Checker")
 st.caption(
@@ -64,12 +122,20 @@ for cat in CATEGORY_PATTERNS:
     category_options.append(display)
 
 st.subheader("1. Folder to scan")
-folder = st.text_input(
-    "Main folder path",
-    key="folder_path",
-    placeholder="/path/to/your/music/folder",
-    help="Paste the full path. On macOS: right-click the folder → hold Option → \"Copy as Pathname\".",
-)
+col_folder, col_browse = st.columns([5, 1])
+with col_folder:
+    folder = st.text_input(
+        "Main folder path",
+        key="folder_path",
+        placeholder="/path/to/your/music/folder",
+        help="Paste the full path, or click Browse to pick it from a native folder dialog.",
+    )
+with col_browse:
+    st.write("")
+    st.button("Browse…", on_click=_browse_and_set_folder)
+
+if st.session_state.get("_browse_error"):
+    st.warning(st.session_state["_browse_error"])
 
 st.subheader("2. How to name files")
 
